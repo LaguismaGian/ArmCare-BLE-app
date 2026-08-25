@@ -1,0 +1,26 @@
+# Flutter
+.dart_tool/
+.pub/
+.build/
+build/
+pubspec.lock
+*.iml
+.idea/
+.vscode/
+.DS_Store
+
+# Android
+android/.gradle/
+android/local.properties
+android/app/build/
+
+# iOS
+ios/Pods/
+ios/Podfile.lock
+ios/Flutter/Generated.xcconfig
+
+# Web
+web/**
+
+# Test
+coverage/

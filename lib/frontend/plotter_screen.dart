@@ -21,30 +21,34 @@ class _PlotterScreenState extends State<PlotterScreen> {
     super.initState();
     widget.dataStream.listen((data) {
       var parts = data.split(',');
-      if (parts.length >= 3) {
-        double hr = double.tryParse(parts[0]) ?? 0;
-        double motion = double.tryParse(parts[1]) ?? 0;
-        double gyro = double.tryParse(parts[2]) ?? 0;
+      if (parts.length < 3) return;
 
-        setState(() {
-          hrHistory.add(hr);
-          motionHistory.add(motion);
-          gyroHistory.add(gyro);
+      double hr = double.tryParse(parts[0]) ?? 0;
+      double motion = double.tryParse(parts[1]) ?? 0;
+      double gyro = double.tryParse(parts[2]) ?? 0;
 
-          if (hrHistory.length > maxDataPoints) {
-            hrHistory.removeAt(0);
-            motionHistory.removeAt(0);
-            gyroHistory.removeAt(0);
-          }
-        });
-      }
+      setState(() {
+        hrHistory.add(hr);
+        motionHistory.add(motion);
+        gyroHistory.add(gyro);
+
+        if (hrHistory.length > maxDataPoints) {
+          hrHistory.removeAt(0);
+          motionHistory.removeAt(0);
+          gyroHistory.removeAt(0);
+        }
+      });
     });
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Live Data Plotter')),
+      appBar: AppBar(
+        title: const Text('Live Data Plotter'),
+        backgroundColor: Colors.purple[700],
+        foregroundColor: Colors.white,
+      ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
@@ -60,9 +64,9 @@ class _PlotterScreenState extends State<PlotterScreen> {
                   minY: 0,
                   maxY: 200,
                   lineBarsData: [
-                    _buildLine(hrHistory, Colors.red, "HR"),
-                    _buildLine(motionHistory, Colors.blue, "Motion"),
-                    _buildLine(gyroHistory, Colors.green, "Gyro"),
+                    _buildLine(hrHistory, Colors.red),
+                    _buildLine(motionHistory, Colors.blue),
+                    _buildLine(gyroHistory, Colors.green),
                   ],
                 ),
               ),
@@ -84,7 +88,7 @@ class _PlotterScreenState extends State<PlotterScreen> {
     );
   }
 
-  LineChartBarData _buildLine(List<double> data, Color color, String label) {
+  LineChartBarData _buildLine(List<double> data, Color color) {
     List<FlSpot> spots = [];
     for (int i = 0; i < data.length; i++) {
       spots.add(FlSpot(i.toDouble(), data[i]));

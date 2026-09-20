@@ -5,6 +5,7 @@ import 'widgets/metric_card.dart';
 import 'widgets/connection_status.dart';
 import 'widgets/battery_indicator.dart';
 import 'plotter_screen.dart';
+import 'record_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -21,6 +22,7 @@ class _HomeScreenState extends State<HomeScreen> {
   double _gyro = 0.0;
   bool _isConnected = false;
   bool _isScanning = false;
+  SensorMode _currentMode = SensorMode.ble;
 
   final int _battery = 85;
 
@@ -43,6 +45,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
     _dataManager.connectionStream.listen((connected) {
       setState(() => _isConnected = connected);
+    });
+
+    _dataManager.modeStream.listen((mode) {
+      setState(() => _currentMode = mode);
     });
   }
 
@@ -93,6 +99,14 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  void _toggleMode() {
+    if (_currentMode == SensorMode.ble) {
+      _dataManager.setMode(SensorMode.phone);
+    } else {
+      _dataManager.setMode(SensorMode.ble);
+    }
+  }
+
   @override
   void dispose() {
     _dataManager.dispose();
@@ -101,6 +115,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    bool isPhoneMode = _currentMode == SensorMode.phone;
+    bool showConnection = !isPhoneMode;
+
     return Scaffold(
       backgroundColor: Colors.grey[100],
       appBar: AppBar(
@@ -112,15 +129,18 @@ class _HomeScreenState extends State<HomeScreen> {
         foregroundColor: Colors.white,
         elevation: 0,
         actions: [
-          if (_isConnected)
+          if (_isConnected && !isPhoneMode)
             BatteryIndicator(battery: _battery),
-          IconButton(
-            icon: Icon(
-              _isConnected ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
-              color: _isConnected ? Colors.lightGreenAccent : Colors.white70,
+          if (showConnection)
+            IconButton(
+              icon: Icon(
+                _isConnected
+                    ? Icons.bluetooth_connected
+                    : Icons.bluetooth_disabled,
+                color: _isConnected ? Colors.lightGreenAccent : Colors.white70,
+              ),
+              onPressed: _toggleConnection,
             ),
-            onPressed: _toggleConnection,
-          ),
         ],
       ),
       body: SafeArea(
@@ -128,10 +148,38 @@ class _HomeScreenState extends State<HomeScreen> {
           padding: const EdgeInsets.all(16.0),
           child: Column(
             children: [
-              ConnectionStatus(
-                isConnected: _isConnected,
-                isScanning: _isScanning,
-              ),
+              if (showConnection)
+                ConnectionStatus(
+                  isConnected: _isConnected,
+                  isScanning: _isScanning,
+                ),
+              if (isPhoneMode)
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.orange[50],
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.orange[300]!, width: 1),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.phone_android,
+                          color: Colors.orange[800], size: 24),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          'Using Phone Sensors',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.orange[800],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               const SizedBox(height: 20),
               Expanded(
                 child: GridView.count(
@@ -142,11 +190,14 @@ class _HomeScreenState extends State<HomeScreen> {
                   children: [
                     MetricCard(
                       title: 'Heart Rate',
-                      value: '${_hr.toInt()}',
-                      unit: 'BPM',
+                      value: isPhoneMode ? '--' : '${_hr.toInt()}',
+                      unit: isPhoneMode ? '' : 'BPM',
                       icon: Icons.favorite,
                       color: Colors.red,
-                      gradient: const [Color(0xFFEF5350), Color(0xFFD32F2F)],
+                      gradient: const [
+                        Color(0xFFEF5350),
+                        Color(0xFFD32F2F)
+                      ],
                     ),
                     MetricCard(
                       title: 'Motion',
@@ -154,7 +205,10 @@ class _HomeScreenState extends State<HomeScreen> {
                       unit: 'g',
                       icon: Icons.speed,
                       color: Colors.orange,
-                      gradient: const [Color(0xFFFFA726), Color(0xFFF57C00)],
+                      gradient: const [
+                        Color(0xFFFFA726),
+                        Color(0xFFF57C00)
+                      ],
                     ),
                     MetricCard(
                       title: 'Gyroscope',
@@ -162,7 +216,10 @@ class _HomeScreenState extends State<HomeScreen> {
                       unit: '°/s',
                       icon: Icons.sync,
                       color: Colors.purple,
-                      gradient: const [Color(0xFFAB47BC), Color(0xFF7B1FA2)],
+                      gradient: const [
+                        Color(0xFFAB47BC),
+                        Color(0xFF7B1FA2)
+                      ],
                     ),
                     MetricCard(
                       title: 'Status',
@@ -176,6 +233,39 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
               const SizedBox(height: 16),
+
+              // Mode Switch Button
+              SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: ElevatedButton.icon(
+                  onPressed: _toggleMode,
+                  icon: Icon(
+                    isPhoneMode ? Icons.phone_android : Icons.bluetooth,
+                  ),
+                  label: Text(
+                    isPhoneMode
+                        ? 'Mode: Phone Sensor'
+                        : 'Mode: BLE Sensor',
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor:
+                        isPhoneMode ? Colors.orange[700] : Colors.blue[700],
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 8),
+
+              // Record Data Button
               SizedBox(
                 width: double.infinity,
                 height: 48,
@@ -185,7 +275,39 @@ class _HomeScreenState extends State<HomeScreen> {
                       context,
                       MaterialPageRoute(
                         builder: (context) =>
-                            PlotterScreen(dataStream: _dataManager.rawDataStream),
+                            RecordScreen(dataManager: _dataManager),
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.fiber_manual_record),
+                  label: const Text(
+                    'Record Data',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green[700],
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 8),
+
+              // Plotter Button
+              SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => PlotterScreen(
+                          dataStream: _dataManager.rawDataStream,
+                        ),
                       ),
                     );
                   },
@@ -203,27 +325,39 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
+
               const SizedBox(height: 8),
-              SizedBox(
-                width: double.infinity,
-                height: 56,
-                child: ElevatedButton.icon(
-                  onPressed: _toggleConnection,
-                  icon: Icon(_isConnected ? Icons.bluetooth_disabled : Icons.bluetooth),
-                  label: Text(
-                    _isConnected ? 'Disconnect' : 'Connect to ESP32',
-                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-                  ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: _isConnected ? Colors.red[400] : Colors.blue[600],
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
+
+              // Connect Button (only in BLE mode)
+              if (showConnection)
+                SizedBox(
+                  width: double.infinity,
+                  height: 56,
+                  child: ElevatedButton.icon(
+                    onPressed: _toggleConnection,
+                    icon: Icon(
+                      _isConnected
+                          ? Icons.bluetooth_disabled
+                          : Icons.bluetooth,
                     ),
-                    elevation: 4,
+                    label: Text(
+                      _isConnected ? 'Disconnect' : 'Connect to ESP32',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor:
+                          _isConnected ? Colors.red[400] : Colors.blue[600],
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      elevation: 4,
+                    ),
                   ),
                 ),
-              ),
             ],
           ),
         ),

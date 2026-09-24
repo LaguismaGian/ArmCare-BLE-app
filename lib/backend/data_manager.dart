@@ -24,15 +24,15 @@ class DataManager {
 
   final StreamController<SensorData> _dataController =
       StreamController<SensorData>.broadcast();
-  final StreamController<String> _alertController =
-      StreamController<String>.broadcast();
+  final StreamController<AlertEvent> _alertController =
+      StreamController<AlertEvent>.broadcast();
   final StreamController<bool> _connectionController =
       StreamController<bool>.broadcast();
   final StreamController<SensorMode> _modeController =
       StreamController<SensorMode>.broadcast();
 
   Stream<SensorData> get dataStream => _dataController.stream;
-  Stream<String> get alertStream => _alertController.stream;
+  Stream<AlertEvent> get alertStream => _alertController.stream;
   Stream<bool> get connectionStream => _connectionController.stream;
   Stream<SensorMode> get modeStream => _modeController.stream;
 
@@ -47,7 +47,6 @@ class DataManager {
 
   // ===== THRESHOLD HANDLING =====
 
-  /// Load the last-saved threshold from the database on startup.
   Future<void> _loadThresholdFromDb() async {
     final saved = await _db.getLatestThreshold();
     if (saved != null) {
@@ -55,7 +54,6 @@ class DataManager {
     }
   }
 
-  /// Re-read the threshold from DB (call after recalculating).
   Future<void> refreshThreshold() async {
     final saved = await _db.getLatestThreshold();
     if (saved != null) {
@@ -65,9 +63,20 @@ class DataManager {
     }
   }
 
-  /// Currently-active thresholds (for display on the home screen).
   double get activeAccelThreshold => _alertService.accelThreshold;
   double get activeGyroThreshold => _alertService.gyroThreshold;
+
+  // ===== ALERT HANDLING =====
+
+  /// Fire an alert: save to DB, push to stream.
+  Future<void> _handleAlert(AlertEvent event) async {
+    try {
+      await _db.insertAlert(event.toRow());
+    } catch (e) {
+      print('Failed to save alert: $e');
+    }
+    _alertController.add(event);
+  }
 
   // ===== BLE DATA =====
 
@@ -83,22 +92,21 @@ class DataManager {
 
     _dataController.add(SensorData(hr: hr, motion: motion, gyro: gyro));
 
-    String? alert = _alertService.checkAlert(hr, motion, gyro: gyro);
-    if (alert != null) {
-      _alertController.add(alert);
+    final event = _alertService.checkAlert(hr, motion, gyro: gyro);
+    if (event != null) {
+      _handleAlert(event);
     }
   }
 
   // ===== MODE SWITCH =====
+
   Future<void> setMode(SensorMode newMode) async {
     if (newMode == _mode) return;
 
-    // Stop phone sensors if leaving phone mode
     if (_mode == SensorMode.phone) {
       _stopPhoneSensors();
     }
 
-    // Disconnect BLE if leaving BLE mode
     if (_mode == SensorMode.ble && newMode == SensorMode.phone) {
       await _ble.disconnect();
       _connectionController.add(false);
@@ -107,7 +115,6 @@ class DataManager {
     _mode = newMode;
     _modeController.add(newMode);
 
-    // Start phone sensors if entering phone mode
     if (newMode == SensorMode.phone) {
       _startPhoneSensors();
     }
@@ -116,7 +123,9 @@ class DataManager {
   void _startPhoneSensors() {
     _accelSub = accelerometerEvents.listen((event) {
       // m/s² → g
-      _phoneMotion = sqrt(event.x * event.x + event.y * event.y + event.z * event.z) / 9.81;
+      _phoneMotion = sqrt(
+              event.x * event.x + event.y * event.y + event.z * event.z) /
+          9.81;
 
       _dataController.add(SensorData(
         hr: 0,
@@ -124,15 +133,17 @@ class DataManager {
         gyro: _phoneGyro,
       ));
 
-      String? alert = _alertService.checkAlert(0, _phoneMotion, gyro: _phoneGyro);
-      if (alert != null) {
-        _alertController.add(alert);
+      final alertEvent =
+          _alertService.checkAlert(0, _phoneMotion, gyro: _phoneGyro);
+      if (alertEvent != null) {
+        _handleAlert(alertEvent);
       }
     });
 
     _gyroSub = gyroscopeEvents.listen((event) {
       // rad/s → °/s
-      _phoneGyro = sqrt(event.x * event.x + event.y * event.y + event.z * event.z) *
+      _phoneGyro = sqrt(
+              event.x * event.x + event.y * event.y + event.z * event.z) *
           (180 / pi);
     });
   }

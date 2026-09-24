@@ -117,6 +117,55 @@ class Threshold {
   }
 }
 
+/// One alert event (fall or warning).
+class AlertRow {
+  final int? id;
+  final String alertClass; // 'fall' or 'warning'
+  final String label; // 'Fall Detected' / 'Abnormal Motion' / 'High HR' / 'Low HR'
+  final String message; // human-readable full text
+  final String timestamp; // ISO8601
+  final double hr;
+  final double motion;
+  final double gyro;
+
+  AlertRow({
+    this.id,
+    required this.alertClass,
+    required this.label,
+    required this.message,
+    required this.timestamp,
+    required this.hr,
+    required this.motion,
+    required this.gyro,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'alertClass': alertClass,
+      'label': label,
+      'message': message,
+      'timestamp': timestamp,
+      'hr': hr,
+      'motion': motion,
+      'gyro': gyro,
+    };
+  }
+
+  factory AlertRow.fromMap(Map<String, dynamic> map) {
+    return AlertRow(
+      id: map['id'],
+      alertClass: map['alertClass'],
+      label: map['label'],
+      message: map['message'],
+      timestamp: map['timestamp'],
+      hr: map['hr'],
+      motion: map['motion'],
+      gyro: map['gyro'],
+    );
+  }
+}
+
 class DatabaseService {
   static final DatabaseService instance = DatabaseService._();
   DatabaseService._();
@@ -133,17 +182,19 @@ class DatabaseService {
     final path = join(await getDatabasesPath(), 'armcare.db');
     return await openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: (db, version) async {
         await _createRecordingsTable(db);
         await _createSamplesTable(db);
         await _createThresholdsTable(db);
+        await _createAlertsTable(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
-        // v1 → v2: added samples + thresholds
-        // v2 → v3: safety re-check (idempotent)
+        // Idempotent — safe to run for any upgrade path.
+        await _createRecordingsTable(db);
         await _createSamplesTable(db);
         await _createThresholdsTable(db);
+        await _createAlertsTable(db);
       },
     );
   }
@@ -181,6 +232,21 @@ class DatabaseService {
         accelThreshold REAL,
         gyroThreshold REAL,
         timestamp TEXT
+      )
+    ''');
+  }
+
+  Future<void> _createAlertsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS alerts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        alertClass TEXT,
+        label TEXT,
+        message TEXT,
+        timestamp TEXT,
+        hr REAL,
+        motion REAL,
+        gyro REAL
       )
     ''');
   }
@@ -260,5 +326,33 @@ class DatabaseService {
     final maps = await db.query('thresholds', orderBy: 'id DESC', limit: 1);
     if (maps.isEmpty) return null;
     return Threshold.fromMap(maps.first);
+  }
+
+  // ===== ALERTS =====
+
+  Future<int> insertAlert(AlertRow alert) async {
+    final db = await database;
+    return await db.insert('alerts', alert.toMap());
+  }
+
+  Future<List<AlertRow>> getRecentAlerts({int limit = 20}) async {
+    final db = await database;
+    final maps = await db.query(
+      'alerts',
+      orderBy: 'id DESC',
+      limit: limit,
+    );
+    return maps.map((m) => AlertRow.fromMap(m)).toList();
+  }
+
+  Future<List<AlertRow>> getAllAlerts() async {
+    final db = await database;
+    final maps = await db.query('alerts', orderBy: 'id DESC');
+    return maps.map((m) => AlertRow.fromMap(m)).toList();
+  }
+
+  Future<void> clearAllAlerts() async {
+    final db = await database;
+    await db.delete('alerts');
   }
 }

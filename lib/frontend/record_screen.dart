@@ -26,7 +26,13 @@ class _RecordScreenState extends State<RecordScreen> {
   // Live graph buffers
   final List<double> _motionHistory = [];
   final List<double> _gyroHistory = [];
-  final int _maxPoints = 50;
+  final int _maxPoints = 100;
+
+  // Display scaling — gyro is divided by this so both fit on the same axis.
+  static const double _gyroDisplayScale = 100.0;
+
+  // Fixed Y-axis range — prevents auto-scale from lying about the data.
+  static const double _yMax = 8.0;
 
   // Recording log
   List<Recording> _recordings = [];
@@ -52,7 +58,7 @@ class _RecordScreenState extends State<RecordScreen> {
         final motion = _combinedAccel(sample.ax, sample.ay, sample.az);
         final gyro = _combinedGyro(sample.gx, sample.gy, sample.gz);
         _motionHistory.add(motion);
-        _gyroHistory.add(gyro);
+        _gyroHistory.add(gyro / _gyroDisplayScale);
         if (_motionHistory.length > _maxPoints) {
           _motionHistory.removeAt(0);
           _gyroHistory.removeAt(0);
@@ -208,8 +214,8 @@ class _RecordScreenState extends State<RecordScreen> {
   // ===== LIVE GRAPH =====
   Widget _buildLiveGraph() {
     return Container(
-      height: 180,
-      padding: const EdgeInsets.all(8),
+      height: 200,
+      padding: const EdgeInsets.fromLTRB(8, 12, 12, 8),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(12),
@@ -222,19 +228,62 @@ class _RecordScreenState extends State<RecordScreen> {
                 style: TextStyle(color: Colors.grey),
               ),
             )
-          : LineChart(
-              LineChartData(
-                gridData: const FlGridData(show: true),
-                titlesData: const FlTitlesData(show: false),
-                borderData: FlBorderData(show: false),
-                minX: 0,
-                maxX: _maxPoints.toDouble(),
-                minY: 0,
-                lineBarsData: [
-                  _buildLine(_motionHistory, Colors.orange),
-                  _buildLine(_gyroHistory, Colors.purple),
-                ],
-              ),
+          : Column(
+              children: [
+                Expanded(
+                  child: LineChart(
+                    LineChartData(
+                      gridData: const FlGridData(show: true),
+                      titlesData: FlTitlesData(
+                        topTitles: const AxisTitles(
+                          sideTitles: SideTitles(showTitles: false),
+                        ),
+                        rightTitles: const AxisTitles(
+                          sideTitles: SideTitles(showTitles: false),
+                        ),
+                        leftTitles: AxisTitles(
+                          sideTitles: SideTitles(
+                            showTitles: true,
+                            reservedSize: 32,
+                            interval: 2,
+                            getTitlesWidget: (value, meta) => Text(
+                              value.toStringAsFixed(0),
+                              style: const TextStyle(
+                                fontSize: 10,
+                                color: Colors.grey,
+                              ),
+                            ),
+                          ),
+                        ),
+                        bottomTitles: const AxisTitles(
+                          sideTitles: SideTitles(showTitles: false),
+                        ),
+                      ),
+                      borderData: FlBorderData(show: false),
+                      minX: 0,
+                      maxX: _maxPoints.toDouble(),
+                      minY: 0,
+                      maxY: _yMax,
+                      lineBarsData: [
+                        _buildLine(_motionHistory, Colors.orange),
+                        _buildLine(_gyroHistory, Colors.purple),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    _buildLegend(Colors.orange, 'Motion (g)'),
+                    const SizedBox(width: 16),
+                    _buildLegend(
+                      Colors.purple,
+                      'Gyro (÷$_gyroDisplayScale °/s)',
+                    ),
+                  ],
+                ),
+              ],
             ),
     );
   }
@@ -246,10 +295,20 @@ class _RecordScreenState extends State<RecordScreen> {
     }
     return LineChartBarData(
       spots: spots,
-      isCurved: true,
+      isCurved: false,
       color: color,
       barWidth: 2,
       dotData: const FlDotData(show: false),
+    );
+  }
+
+  Widget _buildLegend(Color color, String label) {
+    return Row(
+      children: [
+        Container(width: 12, height: 12, color: color),
+        const SizedBox(width: 4),
+        Text(label, style: const TextStyle(fontSize: 11)),
+      ],
     );
   }
 

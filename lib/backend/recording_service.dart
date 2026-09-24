@@ -69,6 +69,10 @@ class RecordingService {
   double _ax = 0, _ay = 0, _az = 0;
   double _gx = 0, _gy = 0, _gz = 0;
 
+  /// Throttle to ~50 Hz. Phone sensors can fire at 100-200 Hz.
+  int _lastSampleMs = 0;
+  static const int _minSampleIntervalMs = 20; // 20 ms → 50 Hz
+
   RecordingService(this._dataManager);
 
   void setMode(SensorMode mode) {
@@ -80,9 +84,15 @@ class RecordingService {
     if (_isRecording) return false;
 
     _samples.clear();
+    _lastSampleMs = 0;
     _isRecording = true;
     _stateController.add(true);
     _startTime = DateTime.now();
+
+    // Seed gyro + accel values so the first sample isn't garbage
+    if (_currentMode == SensorMode.phone) {
+      await _seedPhoneSensorValues();
+    }
 
     // Ticker timer
     _tickerTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
@@ -109,6 +119,31 @@ class RecordingService {
     return true;
   }
 
+  /// Grab one reading from each phone sensor stream before recording starts.
+  /// Prevents the first few samples from having gyro = 0 (which caused the
+  /// initial "hill" in the graph).
+  Future<void> _seedPhoneSensorValues() async {
+    try {
+      final accel = await accelerometerEvents.first
+          .timeout(const Duration(milliseconds: 500));
+      _ax = accel.x / 9.81;
+      _ay = accel.y / 9.81;
+      _az = accel.z / 9.81;
+    } catch (_) {
+      // Timeout — leave accel at 0. Streams will fill in shortly.
+    }
+
+    try {
+      final gyro = await gyroscopeEvents.first
+          .timeout(const Duration(milliseconds: 500));
+      _gx = gyro.x * (180 / 3.141592653589793);
+      _gy = gyro.y * (180 / 3.141592653589793);
+      _gz = gyro.z * (180 / 3.141592653589793);
+    } catch (_) {
+      // Timeout — leave gyro at 0. Streams will fill in shortly.
+    }
+  }
+
   // ===== PHONE SENSORS =====
   void _subscribePhoneSensors() {
     _accelSub = accelerometerEvents.listen((event) {
@@ -124,6 +159,8 @@ class RecordingService {
       _gx = event.x * (180 / 3.141592653589793);
       _gy = event.y * (180 / 3.141592653589793);
       _gz = event.z * (180 / 3.141592653589793);
+      // Note: gyro updates fields but doesn't call _recordSample —
+      // accel listener is the sample clock. This avoids double-recording.
     });
   }
 
@@ -152,6 +189,13 @@ class RecordingService {
 
   void _recordSample() {
     final elapsed = DateTime.now().difference(_startTime!).inMilliseconds;
+
+    // Throttle to 50 Hz — skip if too soon after last sample
+    if (elapsed - _lastSampleMs < _minSampleIntervalMs) {
+      return;
+    }
+    _lastSampleMs = elapsed;
+
     final sample = RecordingSample(
       timestampMs: elapsed,
       ax: _ax,

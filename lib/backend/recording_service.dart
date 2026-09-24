@@ -35,9 +35,6 @@ class RecordingService {
   bool _isRecording = false;
   bool get isRecording => _isRecording;
 
-  String _currentLabel = 'Resting';
-  String get currentLabel => _currentLabel;
-
   SensorMode _currentMode = SensorMode.ble;
   SensorMode get currentMode => _currentMode;
 
@@ -46,6 +43,7 @@ class RecordingService {
 
   DateTime? _startTime;
   Timer? _autoStopTimer;
+  Timer? _tickerTimer;
 
   StreamSubscription? _accelSub;
   StreamSubscription? _gyroSub;
@@ -73,10 +71,6 @@ class RecordingService {
 
   RecordingService(this._dataManager);
 
-  void setLabel(String label) {
-    _currentLabel = label;
-  }
-
   void setMode(SensorMode mode) {
     _currentMode = mode;
   }
@@ -90,8 +84,8 @@ class RecordingService {
     _stateController.add(true);
     _startTime = DateTime.now();
 
-    // Start timer ticker (every 100ms)
-    Timer.periodic(const Duration(milliseconds: 100), (timer) {
+    // Ticker timer
+    _tickerTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
       if (!_isRecording) {
         timer.cancel();
         return;
@@ -100,12 +94,12 @@ class RecordingService {
       _timerController.add(elapsed);
     });
 
-    // Auto-stop after max seconds
+    // Auto-stop
     _autoStopTimer = Timer(Duration(seconds: maxSeconds), () {
       if (_isRecording) stopRecording();
     });
 
-    // Subscribe to sensor data based on mode
+    // Subscribe based on mode
     if (_currentMode == SensorMode.phone) {
       _subscribePhoneSensors();
     } else {
@@ -141,17 +135,17 @@ class RecordingService {
       final parts = raw.split(',');
       if (parts.length < 3) return;
 
-      // BLE sends: HR, Motion, Gyro
-      // We don't have separate X/Y/Z from BLE, so we'll put Motion in all axes
+      // BLE sends combined Motion + Gyro (scalars, no separate X/Y/Z).
+      // Store motion only in ax so magnitude = |motion| (not √3·motion).
       final motion = double.tryParse(parts[1]) ?? 0;
       final gyro = double.tryParse(parts[2]) ?? 0;
 
       _ax = motion;
-      _ay = motion;
-      _az = motion;
+      _ay = 0;
+      _az = 0;
       _gx = gyro;
-      _gy = gyro;
-      _gz = gyro;
+      _gy = 0;
+      _gz = 0;
       _recordSample();
     });
   }
@@ -178,6 +172,7 @@ class RecordingService {
     _isRecording = false;
     _stateController.add(false);
     _autoStopTimer?.cancel();
+    _tickerTimer?.cancel();
     _accelSub?.cancel();
     _gyroSub?.cancel();
     _bleSub?.cancel();
@@ -185,20 +180,25 @@ class RecordingService {
     _gyroSub = null;
     _bleSub = null;
 
-    // Save to database
-    final durationMs = _samples.isEmpty
-        ? 0
-        : _samples.last.timestampMs;
+    final durationMs = _samples.isEmpty ? 0 : _samples.last.timestampMs;
 
+    // Save as "Fall" always
     final recording = Recording(
-      label: _currentLabel,
+      label: 'Fall',
       mode: _currentMode == SensorMode.phone ? 'phone' : 'ble',
       durationMs: durationMs,
       sampleCount: _samples.length,
       timestamp: DateTime.now().toIso8601String(),
     );
 
-    await _db.insertRecording(recording);
+    try {
+      final newId = await _db.insertRecording(recording);
+      await _db.insertSamples(newId, _samples);
+      print('Recording saved: id=$newId, samples=${_samples.length}');
+    } catch (e, stack) {
+      print('Failed to save recording: $e');
+      print(stack);
+    }
   }
 
   // ===== CANCEL (discard) =====
@@ -207,6 +207,7 @@ class RecordingService {
     _isRecording = false;
     _stateController.add(false);
     _autoStopTimer?.cancel();
+    _tickerTimer?.cancel();
     _accelSub?.cancel();
     _gyroSub?.cancel();
     _bleSub?.cancel();
@@ -215,6 +216,7 @@ class RecordingService {
 
   void dispose() {
     _autoStopTimer?.cancel();
+    _tickerTimer?.cancel();
     _accelSub?.cancel();
     _gyroSub?.cancel();
     _bleSub?.cancel();

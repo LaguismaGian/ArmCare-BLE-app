@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import '../backend/data_manager.dart';
@@ -17,14 +18,12 @@ class RecordScreen extends StatefulWidget {
 class _RecordScreenState extends State<RecordScreen> {
   late final RecordingService _recorder;
 
-  final List<String> _labels = ['Resting', 'Walking', 'Running', 'Collision', 'Fall'];
-  String _selectedLabel = 'Resting';
   SensorMode _selectedMode = SensorMode.ble;
 
   bool _isRecording = false;
   int _elapsedMs = 0;
 
-  // Live graph buffers (last 50 samples)
+  // Live graph buffers
   final List<double> _motionHistory = [];
   final List<double> _gyroHistory = [];
   final int _maxPoints = 50;
@@ -37,7 +36,6 @@ class _RecordScreenState extends State<RecordScreen> {
     super.initState();
     _recorder = RecordingService(widget.dataManager);
 
-    // Listen to recording state
     _recorder.stateStream.listen((recording) {
       setState(() => _isRecording = recording);
       if (!recording) {
@@ -45,12 +43,10 @@ class _RecordScreenState extends State<RecordScreen> {
       }
     });
 
-    // Listen to timer
     _recorder.timerStream.listen((elapsed) {
       setState(() => _elapsedMs = elapsed);
     });
 
-    // Listen to live samples
     _recorder.sampleStream.listen((sample) {
       setState(() {
         final motion = _combinedAccel(sample.ax, sample.ay, sample.az);
@@ -67,16 +63,14 @@ class _RecordScreenState extends State<RecordScreen> {
     _loadRecordings();
   }
 
+  /// Fused acceleration magnitude in g: √(ax² + ay² + az²)
   double _combinedAccel(double x, double y, double z) {
-    return (x * x + y * y + z * z) > 0
-        ? (x * x + y * y + z * z)
-        : 0;
+    return sqrt(x * x + y * y + z * z);
   }
 
+  /// Fused gyroscope magnitude in °/s: √(gx² + gy² + gz²)
   double _combinedGyro(double x, double y, double z) {
-    return (x * x + y * y + z * z) > 0
-        ? (x * x + y * y + z * z)
-        : 0;
+    return sqrt(x * x + y * y + z * z);
   }
 
   Future<void> _loadRecordings() async {
@@ -90,7 +84,6 @@ class _RecordScreenState extends State<RecordScreen> {
     } else {
       _motionHistory.clear();
       _gyroHistory.clear();
-      _recorder.setLabel(_selectedLabel);
       _recorder.setMode(_selectedMode);
       await _recorder.startRecording(maxSeconds: 10);
     }
@@ -117,8 +110,8 @@ class _RecordScreenState extends State<RecordScreen> {
     return Scaffold(
       backgroundColor: Colors.grey[100],
       appBar: AppBar(
-        title: const Text('Record Sensor Data'),
-        backgroundColor: Colors.purple[700],
+        title: const Text('Record Fall Data'),
+        backgroundColor: Colors.red[700],
         foregroundColor: Colors.white,
         actions: [
           IconButton(
@@ -135,13 +128,11 @@ class _RecordScreenState extends State<RecordScreen> {
             children: [
               _buildModeSwitch(),
               const SizedBox(height: 12),
-              _buildLabelSelector(),
-              const SizedBox(height: 12),
               _buildLiveGraph(),
               const SizedBox(height: 12),
               _buildTimerAndRecordButton(),
               const SizedBox(height: 12),
-              Expanded(child: _buildRecordingLog()),
+              _buildRecordingLog(),
             ],
           ),
         ),
@@ -185,13 +176,11 @@ class _RecordScreenState extends State<RecordScreen> {
   }) {
     final isSelected = _selectedMode == mode;
     return GestureDetector(
-      onTap: _isRecording
-          ? null
-          : () => setState(() => _selectedMode = mode),
+      onTap: _isRecording ? null : () => setState(() => _selectedMode = mode),
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 12),
         decoration: BoxDecoration(
-          color: isSelected ? Colors.purple[700] : Colors.transparent,
+          color: isSelected ? Colors.red[700] : Colors.transparent,
           borderRadius: BorderRadius.circular(10),
         ),
         child: Row(
@@ -216,51 +205,10 @@ class _RecordScreenState extends State<RecordScreen> {
     );
   }
 
-  // ===== LABEL SELECTOR =====
-  Widget _buildLabelSelector() {
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: _labels.map((label) {
-        final isSelected = _selectedLabel == label;
-        return ChoiceChip(
-          label: Text(label),
-          selected: isSelected,
-          onSelected: _isRecording
-              ? null
-              : (selected) {
-                  if (selected) setState(() => _selectedLabel = label);
-                },
-          selectedColor: _getLabelColor(label),
-          labelStyle: TextStyle(
-            color: isSelected ? Colors.white : Colors.black87,
-            fontWeight: FontWeight.w600,
-          ),
-        );
-      }).toList(),
-    );
-  }
-
-  Color _getLabelColor(String label) {
-    switch (label) {
-      case 'Fall':
-        return Colors.red[700]!;
-      case 'Walking':
-        return Colors.green[700]!;
-      case 'Running':
-        return Colors.blue[700]!;
-      case 'Collision':
-        return Colors.orange[800]!;
-      case 'Resting':
-      default:
-        return Colors.grey[700]!;
-    }
-  }
-
   // ===== LIVE GRAPH =====
   Widget _buildLiveGraph() {
     return Container(
-      height: 150,
+      height: 180,
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
         color: Colors.white,
@@ -269,8 +217,10 @@ class _RecordScreenState extends State<RecordScreen> {
       ),
       child: _motionHistory.isEmpty
           ? const Center(
-              child: Text('No data yet — press Record',
-                  style: TextStyle(color: Colors.grey)),
+              child: Text(
+                'No data yet — press Record',
+                style: TextStyle(color: Colors.grey),
+              ),
             )
           : LineChart(
               LineChartData(
@@ -330,7 +280,7 @@ class _RecordScreenState extends State<RecordScreen> {
               onPressed: _toggleRecording,
               icon: Icon(_isRecording ? Icons.stop : Icons.fiber_manual_record),
               label: Text(
-                _isRecording ? 'STOP' : 'RECORD',
+                _isRecording ? 'STOP' : 'RECORD FALL',
                 style: const TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.bold,
@@ -338,7 +288,7 @@ class _RecordScreenState extends State<RecordScreen> {
               ),
               style: ElevatedButton.styleFrom(
                 backgroundColor:
-                    _isRecording ? Colors.red[600] : Colors.green[700],
+                    _isRecording ? Colors.red[600] : Colors.red[800],
                 foregroundColor: Colors.white,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(14),
@@ -355,44 +305,44 @@ class _RecordScreenState extends State<RecordScreen> {
   // ===== RECORDING LOG =====
   Widget _buildRecordingLog() {
     if (_recordings.isEmpty) {
-      return const Center(
-        child: Text('No recordings yet',
-            style: TextStyle(color: Colors.grey)),
+      return const Expanded(
+        child: Center(
+          child: Text(
+            'No recordings yet',
+            style: TextStyle(color: Colors.grey),
+          ),
+        ),
       );
     }
-    return ListView.builder(
-      itemCount: _recordings.length,
-      itemBuilder: (context, index) {
-        final rec = _recordings[index];
-        return Card(
-          margin: const EdgeInsets.symmetric(vertical: 4),
-          child: ListTile(
-            leading: CircleAvatar(
-              backgroundColor: _getLabelColor(rec.label),
-              child: Text(
-                rec.label[0],
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                ),
+    return Expanded(
+      child: ListView.builder(
+        itemCount: _recordings.length,
+        itemBuilder: (context, index) {
+          final rec = _recordings[index];
+          return Card(
+            margin: const EdgeInsets.symmetric(vertical: 4),
+            child: ListTile(
+              leading: const CircleAvatar(
+                backgroundColor: Colors.red,
+                child: Icon(Icons.warning, color: Colors.white),
+              ),
+              title: Text(
+                rec.label,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              subtitle: Text(
+                '${rec.mode.toUpperCase()} • '
+                '${(rec.durationMs / 1000).toStringAsFixed(1)}s • '
+                '${rec.sampleCount} samples',
+              ),
+              trailing: IconButton(
+                icon: const Icon(Icons.delete_outline),
+                onPressed: () => _deleteRecording(rec.id!),
               ),
             ),
-            title: Text(
-              rec.label,
-              style: const TextStyle(fontWeight: FontWeight.w600),
-            ),
-            subtitle: Text(
-              '${rec.mode.toUpperCase()} • '
-              '${(rec.durationMs / 1000).toStringAsFixed(1)}s • '
-              '${rec.sampleCount} samples',
-            ),
-            trailing: IconButton(
-              icon: const Icon(Icons.delete_outline),
-              onPressed: () => _deleteRecording(rec.id!),
-            ),
-          ),
-        );
-      },
+          );
+        },
+      ),
     );
   }
 }

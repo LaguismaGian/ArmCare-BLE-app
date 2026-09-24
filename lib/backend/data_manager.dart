@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'ble_service.dart';
 import 'alert_service.dart';
+import 'database_service.dart';
 import 'sensor_data.dart';
 
 enum SensorMode { ble, phone }
@@ -10,6 +11,7 @@ enum SensorMode { ble, phone }
 class DataManager {
   final BleService _ble = BleService();
   final AlertService _alertService = AlertService();
+  final DatabaseService _db = DatabaseService.instance;
 
   SensorMode _mode = SensorMode.ble;
   SensorMode get mode => _mode;
@@ -40,7 +42,34 @@ class DataManager {
 
   DataManager() {
     _ble.dataStream.listen(_processBleData);
+    _loadThresholdFromDb();
   }
+
+  // ===== THRESHOLD HANDLING =====
+
+  /// Load the last-saved threshold from the database on startup.
+  Future<void> _loadThresholdFromDb() async {
+    final saved = await _db.getLatestThreshold();
+    if (saved != null) {
+      _alertService.applyThreshold(saved);
+    }
+  }
+
+  /// Re-read the threshold from DB (call after recalculating).
+  Future<void> refreshThreshold() async {
+    final saved = await _db.getLatestThreshold();
+    if (saved != null) {
+      _alertService.applyThreshold(saved);
+    } else {
+      _alertService.resetToDefaults();
+    }
+  }
+
+  /// Currently-active thresholds (for display on the home screen).
+  double get activeAccelThreshold => _alertService.accelThreshold;
+  double get activeGyroThreshold => _alertService.gyroThreshold;
+
+  // ===== BLE DATA =====
 
   void _processBleData(String raw) {
     if (_mode != SensorMode.ble) return;
@@ -54,7 +83,7 @@ class DataManager {
 
     _dataController.add(SensorData(hr: hr, motion: motion, gyro: gyro));
 
-    String? alert = _alertService.checkAlert(hr, motion);
+    String? alert = _alertService.checkAlert(hr, motion, gyro: gyro);
     if (alert != null) {
       _alertController.add(alert);
     }
@@ -86,7 +115,7 @@ class DataManager {
 
   void _startPhoneSensors() {
     _accelSub = accelerometerEvents.listen((event) {
-      // Convert m/s² to g-force
+      // m/s² → g
       _phoneMotion = sqrt(event.x * event.x + event.y * event.y + event.z * event.z) / 9.81;
 
       _dataController.add(SensorData(
@@ -94,10 +123,15 @@ class DataManager {
         motion: _phoneMotion,
         gyro: _phoneGyro,
       ));
+
+      String? alert = _alertService.checkAlert(0, _phoneMotion, gyro: _phoneGyro);
+      if (alert != null) {
+        _alertController.add(alert);
+      }
     });
 
     _gyroSub = gyroscopeEvents.listen((event) {
-      // Convert rad/s to deg/s
+      // rad/s → °/s
       _phoneGyro = sqrt(event.x * event.x + event.y * event.y + event.z * event.z) *
           (180 / pi);
     });
@@ -111,6 +145,8 @@ class DataManager {
     _phoneMotion = 0.0;
     _phoneGyro = 0.0;
   }
+
+  // ===== CONNECTION =====
 
   Future<bool> connect() async {
     if (_mode != SensorMode.ble) return false;

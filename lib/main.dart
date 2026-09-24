@@ -1,8 +1,22 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'frontend/home_screen.dart';
 
 void main() {
-  runApp(const MyApp());
+  FlutterError.onError = (FlutterErrorDetails details) {
+    FlutterError.presentError(details);
+    print('FLUTTER ERROR: ${details.exception}');
+    print(details.stack);
+  };
+
+  runZonedGuarded(() {
+    print('>>> main() starting');
+    runApp(const MyApp());
+    print('>>> runApp() returned');
+  }, (error, stack) {
+    print('ZONE ERROR: $error');
+    print(stack);
+  });
 }
 
 class MyApp extends StatelessWidget {
@@ -10,6 +24,7 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    print('>>> MyApp.build()');
     return MaterialApp(
       title: 'ArmCare',
       theme: ThemeData(

@@ -8,6 +8,7 @@ import 'widgets/battery_indicator.dart';
 import 'widgets/alert_history.dart';
 import 'plotter_screen.dart';
 import 'record_screen.dart';
+import 'contacts_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -19,8 +20,6 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final DataManager _dataManager = DataManager();
   final ThresholdService _thresholdService = ThresholdService();
-  final GlobalKey<AlertHistoryState> _alertHistoryKey =
-      GlobalKey<AlertHistoryState>();
 
   double _hr = 0.0;
   double _motion = 0.0;
@@ -244,7 +243,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
                     const SizedBox(height: 8),
 
-                    // ===== METRIC GRID (non-scrolling, sized to content) =====
+                    // ===== METRIC GRID =====
                     GridView.count(
                       crossAxisCount: 2,
                       crossAxisSpacing: 16,
@@ -300,10 +299,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     const SizedBox(height: 20),
 
                     // ===== ALERT HISTORY =====
-                    AlertHistory(
-                      key: _alertHistoryKey,
-                      dataManager: _dataManager,
-                    ),
+                    AlertHistory(dataManager: _dataManager),
 
                     const SizedBox(height: 8),
                   ],
@@ -445,6 +441,36 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.purple[700],
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+
+                  // Emergency Contacts Button (NEW)
+                  SizedBox(
+                    width: double.infinity,
+                    height: 48,
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => const ContactsScreen(),
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.contact_phone),
+                      label: const Text(
+                        'Emergency Contacts',
+                        style: TextStyle(
+                            fontSize: 14, fontWeight: FontWeight.w600),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.red[700],
                         foregroundColor: Colors.white,
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(10),

@@ -166,6 +166,35 @@ class AlertRow {
   }
 }
 
+/// One emergency contact saved by the user.
+class Contact {
+  final int? id;
+  final String name;
+  final String phone;
+
+  Contact({
+    this.id,
+    required this.name,
+    required this.phone,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'name': name,
+      'phone': phone,
+    };
+  }
+
+  factory Contact.fromMap(Map<String, dynamic> map) {
+    return Contact(
+      id: map['id'],
+      name: map['name'],
+      phone: map['phone'],
+    );
+  }
+}
+
 class DatabaseService {
   static final DatabaseService instance = DatabaseService._();
   DatabaseService._();
@@ -182,12 +211,13 @@ class DatabaseService {
     final path = join(await getDatabasesPath(), 'armcare.db');
     return await openDatabase(
       path,
-      version: 4,
+      version: 5,
       onCreate: (db, version) async {
         await _createRecordingsTable(db);
         await _createSamplesTable(db);
         await _createThresholdsTable(db);
         await _createAlertsTable(db);
+        await _createContactsTable(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         // Idempotent — safe to run for any upgrade path.
@@ -195,6 +225,7 @@ class DatabaseService {
         await _createSamplesTable(db);
         await _createThresholdsTable(db);
         await _createAlertsTable(db);
+        await _createContactsTable(db);
       },
     );
   }
@@ -247,6 +278,16 @@ class DatabaseService {
         hr REAL,
         motion REAL,
         gyro REAL
+      )
+    ''');
+  }
+
+  Future<void> _createContactsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS contacts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        phone TEXT
       )
     ''');
   }
@@ -354,5 +395,28 @@ class DatabaseService {
   Future<void> clearAllAlerts() async {
     final db = await database;
     await db.delete('alerts');
+  }
+
+  // ===== CONTACTS =====
+
+  Future<int> insertContact(Contact contact) async {
+    final db = await database;
+    return await db.insert('contacts', contact.toMap());
+  }
+
+  Future<List<Contact>> getAllContacts() async {
+    final db = await database;
+    final maps = await db.query('contacts', orderBy: 'id ASC');
+    return maps.map((m) => Contact.fromMap(m)).toList();
+  }
+
+  Future<void> deleteContact(int id) async {
+    final db = await database;
+    await db.delete('contacts', where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<void> clearAllContacts() async {
+    final db = await database;
+    await db.delete('contacts');
   }
 }

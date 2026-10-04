@@ -43,16 +43,24 @@ class AlertService {
   DateTime? _lastAlertTime;
   static const int _cooldownSeconds = 10;
 
-  // ===== Tunable constants (Phase 2 will refine these) =====
+  // ===== Tunable constants (Phase 2 refines these) =====
 
-  /// Abnormal-motion multiplier — alert fires at this fraction of the
-  /// fall threshold. Lower = more sensitive, higher = stricter.
-  static const double _softFactor = 0.7;
+  /// Warning fires at this fraction of the fall threshold.
+  static const double _softFactor = 0.85;
 
-  /// High heart-rate warning bound (bpm).
+  /// Below this, motion is just noise — ignore.
+  static const double _motionNoiseFloor = 0.3; // g (deviation)
+
+  /// Below this, gyro is just noise — ignore.
+  static const double _gyroNoiseFloor = 10.0; // °/s
+
+  /// Above this HR, consider the user "active" (exercise explains it).
+  static const double _activeHrFloor = 100; // bpm
+
+  /// High HR warning bound (bpm) — used if baseline not set.
   static const double _highHrThreshold = 130;
 
-  /// Low heart-rate warning bound (bpm).
+  /// Low HR warning bound (bpm) — used if baseline not set.
   static const double _lowHrThreshold = 40;
 
   // ===== Defaults (used until a threshold is calculated) =====
@@ -63,8 +71,12 @@ class AlertService {
   double _accelThreshold = _defaultAccelThreshold;
   double _gyroThreshold = _defaultGyroThreshold;
 
+  // ===== HR baseline (personalized) =====
+  double? _hrBaseline;
+
   double get accelThreshold => _accelThreshold;
   double get gyroThreshold => _gyroThreshold;
+  double? get hrBaseline => _hrBaseline;
 
   AlertService({Threshold? threshold}) {
     if (threshold != null) {
@@ -81,17 +93,27 @@ class AlertService {
     }
   }
 
+  /// Set the personalized HR baseline.
+  void applyHrBaseline(double baselineBpm) {
+    if (baselineBpm > 0) {
+      _hrBaseline = baselineBpm;
+    }
+  }
+
   void resetToDefaults() {
     _accelThreshold = _defaultAccelThreshold;
     _gyroThreshold = _defaultGyroThreshold;
+    _hrBaseline = null;
   }
 
   /// Returns an [AlertEvent] if an alert triggered, null otherwise.
-  ///
-  /// [motion] is fused acceleration magnitude (g).
-  /// [gyro]   is fused gyro magnitude (°/s) — pass 0 if unknown.
   AlertEvent? checkAlert(double hr, double motion, {double gyro = 0.0}) {
     AlertEvent? event;
+
+    // ===== Noise floor — reject sensor junk =====
+    final motionAboveNoise = motion > _motionNoiseFloor;
+    final gyroAboveNoise = gyro > _gyroNoiseFloor;
+    final hrValid = hr > 0;
 
     final accelExceeded = motion > _accelThreshold;
     final gyroExceeded = gyro > _gyroThreshold;
@@ -99,11 +121,9 @@ class AlertService {
     final softAccel = _accelThreshold * _softFactor;
     final softGyro = _gyroThreshold * _softFactor;
 
-    final softMotionExceeded =
-        motion > softAccel || (gyro > 0 && gyro > softGyro);
-
-    // ===== 1. Fall: accel AND gyro both exceed their thresholds =====
-    if (accelExceeded && (gyro == 0.0 || gyroExceeded)) {
+    // ===== 1. Fall: motion AND gyro BOTH exceed thresholds =====
+    // (noise floors guard against sensor junk)
+    if (accelExceeded && gyroAboveNoise && gyroExceeded) {
       event = AlertEvent(
         alertClass: 'fall',
         label: 'Fall Detected',
@@ -114,7 +134,13 @@ class AlertService {
       );
     }
     // ===== 2. Abnormal motion (near-fall / stumble) =====
-    else if (softMotionExceeded) {
+    // Requires: motion or gyro above soft threshold
+    //           AND above noise floor
+    //           AND HR is NOT elevated (rules out exercise)
+    else if (motionAboveNoise &&
+        gyroAboveNoise &&
+        (motion > softAccel || gyro > softGyro) &&
+        (!hrValid || hr < _activeHrFloor)) {
       event = AlertEvent(
         alertClass: 'warning',
         label: 'Abnormal Motion',
@@ -124,30 +150,39 @@ class AlertService {
         gyro: gyro,
       );
     }
-    // ===== 3. Heart-rate warnings =====
-    else if (hr > _highHrThreshold) {
-      event = AlertEvent(
-        alertClass: 'warning',
-        label: 'High HR',
-        message: '⚠️ High Heart Rate: ${hr.toInt()} BPM',
-        hr: hr,
-        motion: motion,
-        gyro: gyro,
-      );
-    } else if (hr > 0 && hr < _lowHrThreshold) {
-      event = AlertEvent(
-        alertClass: 'warning',
-        label: 'Low HR',
-        message: '⚠️ Low Heart Rate: ${hr.toInt()} BPM',
-        hr: hr,
-        motion: motion,
-        gyro: gyro,
-      );
+    // ===== 3. HR warnings (only if user is NOT exercising) =====
+    else if (hrValid && motion < _motionNoiseFloor) {
+      final highBound = _hrBaseline != null
+          ? _hrBaseline! + 50
+          : _highHrThreshold;
+      final lowBound = _hrBaseline != null
+          ? _hrBaseline! - 30
+          : _lowHrThreshold;
+
+      if (hr > highBound) {
+        event = AlertEvent(
+          alertClass: 'warning',
+          label: 'High HR',
+          message: '⚠️ High Heart Rate: ${hr.toInt()} BPM',
+          hr: hr,
+          motion: motion,
+          gyro: gyro,
+        );
+      } else if (hr < lowBound) {
+        event = AlertEvent(
+          alertClass: 'warning',
+          label: 'Low HR',
+          message: '⚠️ Low Heart Rate: ${hr.toInt()} BPM',
+          hr: hr,
+          motion: motion,
+          gyro: gyro,
+        );
+      }
     }
 
     if (event == null) return null;
 
-    // ===== Cooldown check =====
+    // ===== Cooldown =====
     if (_lastAlertTime != null &&
         DateTime.now().difference(_lastAlertTime!).inSeconds <
             _cooldownSeconds) {

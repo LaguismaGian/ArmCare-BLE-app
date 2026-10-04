@@ -2,14 +2,16 @@ import 'dart:async';
 import 'dart:math';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'ble_service.dart';
+import 'wifi_service.dart';
 import 'alert_service.dart';
 import 'database_service.dart';
 import 'sensor_data.dart';
 
-enum SensorMode { ble, phone }
+enum SensorMode { ble, phone, wifi }
 
 class DataManager {
   final BleService _ble = BleService();
+  final WifiService _wifi = WifiService();
   final AlertService _alertService = AlertService();
   final DatabaseService _db = DatabaseService.instance;
 
@@ -18,6 +20,7 @@ class DataManager {
 
   StreamSubscription? _accelSub;
   StreamSubscription? _gyroSub;
+  StreamSubscription? _wifiSub;
 
   double _phoneMotion = 0.0;
   double _phoneGyro = 0.0;
@@ -36,12 +39,24 @@ class DataManager {
   Stream<bool> get connectionStream => _connectionController.stream;
   Stream<SensorMode> get modeStream => _modeController.stream;
 
-  bool get isConnected => _ble.isConnected();
+  bool get isConnected {
+    if (_mode == SensorMode.ble) return _ble.isConnected();
+    if (_mode == SensorMode.wifi) return _wifi.isConnected();
+    return false;
+  }
 
-  Stream<String> get rawDataStream => _ble.dataStream;
+  /// Raw line stream from whichever remote source is active (BLE or Wi-Fi).
+  /// Used by RecordingService for fall-data capture.
+  Stream<String> get rawDataStream {
+    if (_mode == SensorMode.wifi) return _wifi.dataStream;
+    return _ble.dataStream;
+  }
+
+  /// IP of the ESP32 (only set in Wi-Fi mode).
+  String? get espIp => _wifi.espIp;
 
   DataManager() {
-    _ble.dataStream.listen(_processBleData);
+    _ble.dataStream.listen(_processIncomingData);
     _loadThresholdFromDb();
   }
 
@@ -68,7 +83,6 @@ class DataManager {
 
   // ===== ALERT HANDLING =====
 
-  /// Fire an alert: save to DB, push to stream.
   Future<void> _handleAlert(AlertEvent event) async {
     try {
       await _db.insertAlert(event.toRow());
@@ -78,17 +92,21 @@ class DataManager {
     _alertController.add(event);
   }
 
-  // ===== BLE DATA =====
+  // ===== REMOTE DATA (BLE + Wi-Fi share this) =====
 
-  void _processBleData(String raw) {
-    if (_mode != SensorMode.ble) return;
+  void _processIncomingData(String raw) {
+    // Route by current mode
+    if (_mode != SensorMode.ble && _mode != SensorMode.wifi) return;
 
     var parts = raw.split(',');
     if (parts.length < 3) return;
 
     double hr = double.tryParse(parts[0]) ?? 0;
-    double motion = double.tryParse(parts[1]) ?? 0;
+    double rawMotion = double.tryParse(parts[1]) ?? 0;
     double gyro = double.tryParse(parts[2]) ?? 0;
+
+    // Remote sends motion as fused magnitude (near 1g at rest).
+    double motion = (rawMotion - 1.0).abs();
 
     _dataController.add(SensorData(hr: hr, motion: motion, gyro: gyro));
 
@@ -103,18 +121,29 @@ class DataManager {
   Future<void> setMode(SensorMode newMode) async {
     if (newMode == _mode) return;
 
+    // Stop phone sensors if leaving phone mode
     if (_mode == SensorMode.phone) {
       _stopPhoneSensors();
     }
 
-    if (_mode == SensorMode.ble && newMode == SensorMode.phone) {
+    // Disconnect BLE if leaving BLE mode
+    if (_mode == SensorMode.ble && newMode != SensorMode.ble) {
       await _ble.disconnect();
+      _connectionController.add(false);
+    }
+
+    // Disconnect Wi-Fi if leaving Wi-Fi mode
+    if (_mode == SensorMode.wifi && newMode != SensorMode.wifi) {
+      await _wifiSub?.cancel();
+      _wifiSub = null;
+      await _wifi.disconnect();
       _connectionController.add(false);
     }
 
     _mode = newMode;
     _modeController.add(newMode);
 
+    // Start phone sensors if entering phone mode
     if (newMode == SensorMode.phone) {
       _startPhoneSensors();
     }
@@ -122,10 +151,10 @@ class DataManager {
 
   void _startPhoneSensors() {
     _accelSub = accelerometerEvents.listen((event) {
-      // m/s² → g
-      _phoneMotion = sqrt(
+      final rawMag = sqrt(
               event.x * event.x + event.y * event.y + event.z * event.z) /
           9.81;
+      _phoneMotion = (rawMag - 1.0).abs();
 
       _dataController.add(SensorData(
         hr: 0,
@@ -141,7 +170,6 @@ class DataManager {
     });
 
     _gyroSub = gyroscopeEvents.listen((event) {
-      // rad/s → °/s
       _phoneGyro = sqrt(
               event.x * event.x + event.y * event.y + event.z * event.z) *
           (180 / pi);
@@ -157,10 +185,13 @@ class DataManager {
     _phoneGyro = 0.0;
   }
 
-  // ===== CONNECTION =====
+  // ===== CONNECTION — BLE =====
 
   Future<bool> connect() async {
-    if (_mode != SensorMode.ble) return false;
+    if (_mode != SensorMode.ble) {
+      print('BLE connect blocked — mode is $_mode');
+      return false;
+    }
     bool success = await _ble.connect();
     _connectionController.add(success);
     return success;
@@ -171,8 +202,43 @@ class DataManager {
     _connectionController.add(false);
   }
 
+  // ===== CONNECTION — WI-FI =====
+
+  /// Connect to the ESP32 at [ip] over TCP.
+  /// Caller must have switched mode to [SensorMode.wifi] first.
+  Future<bool> connectWifi(String ip) async {
+    if (_mode != SensorMode.wifi) {
+      print('WiFi connect blocked — mode is $_mode');
+      return false;
+    }
+
+    await _wifiSub?.cancel();
+    _wifiSub = null;
+
+    final success = await _wifi.connect(ip);
+
+    if (success) {
+      // Route Wi-Fi stream through the same parser as BLE
+      _wifiSub = _wifi.dataStream.listen(_processIncomingData);
+    }
+
+    _connectionController.add(success);
+    return success;
+  }
+
+  Future<void> disconnectWifi() async {
+    await _wifiSub?.cancel();
+    _wifiSub = null;
+    await _wifi.disconnect();
+    _connectionController.add(false);
+  }
+
+  // ===== DISPOSE =====
+
   void dispose() {
     _stopPhoneSensors();
+    _wifiSub?.cancel();
+    _wifi.dispose();
     _alertService.dispose();
     _dataController.close();
     _alertController.close();

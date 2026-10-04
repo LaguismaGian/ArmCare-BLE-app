@@ -120,10 +120,10 @@ class Threshold {
 /// One alert event (fall or warning).
 class AlertRow {
   final int? id;
-  final String alertClass; // 'fall' or 'warning'
-  final String label; // 'Fall Detected' / 'Abnormal Motion' / 'High HR' / 'Low HR'
-  final String message; // human-readable full text
-  final String timestamp; // ISO8601
+  final String alertClass;
+  final String label;
+  final String message;
+  final String timestamp;
   final double hr;
   final double motion;
   final double gyro;
@@ -220,7 +220,6 @@ class DatabaseService {
         await _createContactsTable(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
-        // Idempotent — safe to run for any upgrade path.
         await _createRecordingsTable(db);
         await _createSamplesTable(db);
         await _createThresholdsTable(db);
@@ -367,6 +366,15 @@ class DatabaseService {
     final maps = await db.query('thresholds', orderBy: 'id DESC', limit: 1);
     if (maps.isEmpty) return null;
     return Threshold.fromMap(maps.first);
+  }
+
+  /// Wipes calibration data: all fall recordings + samples + threshold.
+  /// Alert history and contacts are preserved.
+  Future<void> clearCalibration() async {
+    final db = await database;
+    await db.delete('samples');
+    await db.delete('recordings');
+    await db.delete('thresholds');
   }
 
   // ===== ALERTS =====

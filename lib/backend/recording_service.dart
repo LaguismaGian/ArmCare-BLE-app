@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'database_service.dart';
 import 'data_manager.dart';
@@ -69,9 +70,14 @@ class RecordingService {
   double _ax = 0, _ay = 0, _az = 0;
   double _gx = 0, _gy = 0, _gz = 0;
 
-  /// Throttle to ~50 Hz. Phone sensors can fire at 100-200 Hz.
+  /// Phone-mode baseline magnitude (bias-corrected).
+  /// Measured at the start of recording so we subtract the sensor's
+  /// inherent offset, not a hardcoded 1.0g.
+  double _baselineMag = 1.0;
+
+  /// Throttle to ~50 Hz.
   int _lastSampleMs = 0;
-  static const int _minSampleIntervalMs = 20; // 20 ms → 50 Hz
+  static const int _minSampleIntervalMs = 20;
 
   RecordingService(this._dataManager);
 
@@ -89,7 +95,7 @@ class RecordingService {
     _stateController.add(true);
     _startTime = DateTime.now();
 
-    // Seed gyro + accel values so the first sample isn't garbage
+    // Seed gyro + accel + measure baseline bias
     if (_currentMode == SensorMode.phone) {
       await _seedPhoneSensorValues();
     }
@@ -119,18 +125,48 @@ class RecordingService {
     return true;
   }
 
-  /// Grab one reading from each phone sensor stream before recording starts.
-  /// Prevents the first few samples from having gyro = 0 (which caused the
-  /// initial "hill" in the graph).
+  /// Grab several readings to:
+  ///   1. Seed accel + gyro so first sample isn't zero
+  ///   2. Measure the phone's rest magnitude (baseline bias)
   Future<void> _seedPhoneSensorValues() async {
     try {
-      final accel = await accelerometerEvents.first
-          .timeout(const Duration(milliseconds: 500));
-      _ax = accel.x / 9.81;
-      _ay = accel.y / 9.81;
-      _az = accel.z / 9.81;
+      // Average the first ~5 readings to get a stable baseline
+      final buffer = <double>[];
+      final completer = Completer<void>();
+
+      late StreamSubscription sub;
+      sub = accelerometerEvents.listen((event) {
+        final mag = sqrt(event.x * event.x +
+                event.y * event.y +
+                event.z * event.z) /
+            9.81;
+        buffer.add(mag);
+
+        if (buffer.length >= 5) {
+          sub.cancel();
+          if (!completer.isCompleted) completer.complete();
+        }
+      });
+
+      await completer.future.timeout(
+        const Duration(milliseconds: 800),
+        onTimeout: () {
+          sub.cancel();
+        },
+      );
+
+      if (buffer.isNotEmpty) {
+        _baselineMag = buffer.reduce((a, b) => a + b) / buffer.length;
+
+        // Also seed current accel fields
+        _ax = 0;
+        _ay = 0;
+        _az = _baselineMag;
+      } else {
+        _baselineMag = 1.0;
+      }
     } catch (_) {
-      // Timeout — leave accel at 0. Streams will fill in shortly.
+      _baselineMag = 1.0;
     }
 
     try {
@@ -139,18 +175,26 @@ class RecordingService {
       _gx = gyro.x * (180 / 3.141592653589793);
       _gy = gyro.y * (180 / 3.141592653589793);
       _gz = gyro.z * (180 / 3.141592653589793);
-    } catch (_) {
-      // Timeout — leave gyro at 0. Streams will fill in shortly.
-    }
+    } catch (_) {}
   }
 
   // ===== PHONE SENSORS =====
   void _subscribePhoneSensors() {
     _accelSub = accelerometerEvents.listen((event) {
       if (!_isRecording) return;
-      _ax = event.x / 9.81;
-      _ay = event.y / 9.81;
-      _az = event.z / 9.81;
+
+      // Raw magnitude in g
+      final rawMag = sqrt(event.x * event.x +
+              event.y * event.y +
+              event.z * event.z) /
+          9.81;
+
+      // Bias-corrected deviation — subtract the measured baseline, not 1.0
+      final deviation = (rawMag - _baselineMag).abs();
+
+      _ax = deviation;
+      _ay = 0;
+      _az = 0;
       _recordSample();
     });
 
@@ -159,8 +203,6 @@ class RecordingService {
       _gx = event.x * (180 / 3.141592653589793);
       _gy = event.y * (180 / 3.141592653589793);
       _gz = event.z * (180 / 3.141592653589793);
-      // Note: gyro updates fields but doesn't call _recordSample —
-      // accel listener is the sample clock. This avoids double-recording.
     });
   }
 
@@ -172,8 +214,6 @@ class RecordingService {
       final parts = raw.split(',');
       if (parts.length < 3) return;
 
-      // BLE sends combined Motion + Gyro (scalars, no separate X/Y/Z).
-      // Store motion only in ax so magnitude = |motion| (not √3·motion).
       final motion = double.tryParse(parts[1]) ?? 0;
       final gyro = double.tryParse(parts[2]) ?? 0;
 
@@ -189,11 +229,7 @@ class RecordingService {
 
   void _recordSample() {
     final elapsed = DateTime.now().difference(_startTime!).inMilliseconds;
-
-    // Throttle to 50 Hz — skip if too soon after last sample
-    if (elapsed - _lastSampleMs < _minSampleIntervalMs) {
-      return;
-    }
+    if (elapsed - _lastSampleMs < _minSampleIntervalMs) return;
     _lastSampleMs = elapsed;
 
     final sample = RecordingSample(
@@ -226,7 +262,6 @@ class RecordingService {
 
     final durationMs = _samples.isEmpty ? 0 : _samples.last.timestampMs;
 
-    // Save as "Fall" always
     final recording = Recording(
       label: 'Fall',
       mode: _currentMode == SensorMode.phone ? 'phone' : 'ble',
@@ -238,14 +273,14 @@ class RecordingService {
     try {
       final newId = await _db.insertRecording(recording);
       await _db.insertSamples(newId, _samples);
-      print('Recording saved: id=$newId, samples=${_samples.length}');
+      print('Recording saved: id=$newId, samples=${_samples.length}, '
+          'baseline=${_baselineMag.toStringAsFixed(3)}');
     } catch (e, stack) {
       print('Failed to save recording: $e');
       print(stack);
     }
   }
 
-  // ===== CANCEL (discard) =====
   Future<void> cancelRecording() async {
     if (!_isRecording) return;
     _isRecording = false;

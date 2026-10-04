@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../backend/data_manager.dart';
 import '../backend/threshold_service.dart';
+import '../backend/database_service.dart';
 import 'widgets/metric_card.dart';
 import 'widgets/connection_status.dart';
 import 'widgets/battery_indicator.dart';
@@ -9,6 +10,7 @@ import 'widgets/alert_history.dart';
 import 'plotter_screen.dart';
 import 'record_screen.dart';
 import 'contacts_screen.dart';
+import 'wifi_setup_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -141,6 +143,49 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Future<void> _confirmResetCalibration() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Reset Calibration?'),
+        content: const Text(
+            'This will delete all Fall recordings and reset the threshold.\n\n'
+            'Alert history and emergency contacts will be kept.\n\n'
+            'You will need to record fresh Fall data and calibrate again.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Reset'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      await _resetCalibration();
+    }
+  }
+
+  Future<void> _resetCalibration() async {
+    await DatabaseService.instance.clearCalibration();
+    await _dataManager.refreshThreshold();
+    await _loadThresholdDisplay();
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Calibration reset. Record fresh Fall data.'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+    }
+  }
+
   // ===== CONNECTION =====
 
   void _toggleConnection() async {
@@ -164,12 +209,74 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  void _toggleMode() {
-    if (_currentMode == SensorMode.ble) {
-      _dataManager.setMode(SensorMode.phone);
-    } else {
-      _dataManager.setMode(SensorMode.ble);
+  // ===== MODE SWITCHING =====
+
+  void _cycleMode() {
+    final next = switch (_currentMode) {
+      SensorMode.ble => SensorMode.phone,
+      SensorMode.phone => SensorMode.wifi,
+      SensorMode.wifi => SensorMode.ble,
+    };
+    _dataManager.setMode(next);
+  }
+
+  String _modeLabel() {
+    switch (_currentMode) {
+      case SensorMode.ble:
+        return 'Mode: BLE Sensor';
+      case SensorMode.phone:
+        return 'Mode: Phone Sensor';
+      case SensorMode.wifi:
+        return 'Mode: Wi-Fi Sensor';
     }
+  }
+
+  IconData _modeIcon() {
+    switch (_currentMode) {
+      case SensorMode.ble:
+        return Icons.bluetooth;
+      case SensorMode.phone:
+        return Icons.phone_android;
+      case SensorMode.wifi:
+        return Icons.wifi;
+    }
+  }
+
+  Color _modeColor() {
+    switch (_currentMode) {
+      case SensorMode.ble:
+        return Colors.blue[700]!;
+      case SensorMode.phone:
+        return Colors.orange[700]!;
+      case SensorMode.wifi:
+        return Colors.green[700]!;
+    }
+  }
+
+  // ===== WI-FI SETUP =====
+
+  Future<void> _openWifiSetup() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => WifiSetupScreen(
+          onConnected: (ip) async {
+            print('WiFi: got IP $ip, connecting...');
+            final ok = await _dataManager.connectWifi(ip);
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(ok
+                      ? 'Wi-Fi connected to $ip'
+                      : 'Wi-Fi connected but app socket failed'),
+                  backgroundColor: ok ? Colors.green : Colors.orange,
+                ),
+              );
+            }
+          },
+        ),
+      ),
+    );
   }
 
   @override
@@ -186,8 +293,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    bool isPhoneMode = _currentMode == SensorMode.phone;
-    bool showConnection = !isPhoneMode;
+    final isPhoneMode = _currentMode == SensorMode.phone;
+    final isWifiMode = _currentMode == SensorMode.wifi;
+    final showConnection = !isPhoneMode;
+    final hasThreshold = _accelThreshold != null && _accelThreshold! > 0;
 
     return Scaffold(
       backgroundColor: Colors.grey[100],
@@ -202,7 +311,7 @@ class _HomeScreenState extends State<HomeScreen> {
         actions: [
           if (_isConnected && !isPhoneMode)
             BatteryIndicator(battery: _battery),
-          if (showConnection)
+          if (showConnection && !isWifiMode)
             IconButton(
               icon: Icon(
                 _isConnected
@@ -225,7 +334,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    _buildThresholdChip(),
+                    _buildThresholdChip(hasThreshold: hasThreshold),
                     const SizedBox(height: 8),
 
                     if (showConnection) ...[
@@ -238,6 +347,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
                     if (isPhoneMode) ...[
                       _buildPhoneModeBanner(),
+                      const SizedBox(height: 8),
+                    ],
+
+                    if (isWifiMode && _isConnected) ...[
+                      _buildWifiConnectedBanner(),
                       const SizedBox(height: 8),
                     ],
 
@@ -353,6 +467,30 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ),
                   ),
+
+                  // Reset Calibration (only if threshold set)
+                  if (hasThreshold) ...[
+                    const SizedBox(height: 6),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 36,
+                      child: TextButton.icon(
+                        onPressed: _confirmResetCalibration,
+                        icon: const Icon(Icons.restart_alt, size: 16),
+                        label: const Text(
+                          'Reset Calibration',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        style: TextButton.styleFrom(
+                          foregroundColor: Colors.red[700],
+                        ),
+                      ),
+                    ),
+                  ],
+
                   const SizedBox(height: 8),
 
                   // Mode Switch Button
@@ -360,23 +498,17 @@ class _HomeScreenState extends State<HomeScreen> {
                     width: double.infinity,
                     height: 48,
                     child: ElevatedButton.icon(
-                      onPressed: _toggleMode,
-                      icon: Icon(
-                        isPhoneMode ? Icons.phone_android : Icons.bluetooth,
-                      ),
+                      onPressed: _cycleMode,
+                      icon: Icon(_modeIcon()),
                       label: Text(
-                        isPhoneMode
-                            ? 'Mode: Phone Sensor'
-                            : 'Mode: BLE Sensor',
+                        _modeLabel(),
                         style: const TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: isPhoneMode
-                            ? Colors.orange[700]
-                            : Colors.blue[700],
+                        backgroundColor: _modeColor(),
                         foregroundColor: Colors.white,
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(10),
@@ -450,7 +582,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 8),
 
-                  // Emergency Contacts Button (NEW)
+                  // Emergency Contacts Button
                   SizedBox(
                     width: double.infinity,
                     height: 48,
@@ -479,8 +611,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
 
-                  // Connect Button (only in BLE mode)
-                  if (showConnection) ...[
+                  // BLE Connect Button (only in BLE mode)
+                  if (_currentMode == SensorMode.ble) ...[
                     const SizedBox(height: 8),
                     SizedBox(
                       width: double.infinity,
@@ -512,6 +644,36 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ),
                   ],
+
+                  // Wi-Fi Setup Button (only in Wi-Fi mode)
+                  if (isWifiMode) ...[
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 56,
+                      child: ElevatedButton.icon(
+                        onPressed: _openWifiSetup,
+                        icon: const Icon(Icons.settings_ethernet),
+                        label: Text(
+                          _isConnected
+                              ? 'Reconfigure Wi-Fi'
+                              : 'Set up Wi-Fi',
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green[700],
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          elevation: 4,
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -523,9 +685,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // ===== THRESHOLD CHIP =====
 
-  Widget _buildThresholdChip() {
-    final hasThreshold = _accelThreshold != null && _accelThreshold! > 0;
-
+  Widget _buildThresholdChip({required bool hasThreshold}) {
     final text = hasThreshold
         ? '🎯 Accel ${_accelThreshold!.toStringAsFixed(2)} g  •  '
             'Gyro ${_gyroThreshold!.toStringAsFixed(0)} °/s'
@@ -586,6 +746,48 @@ class _HomeScreenState extends State<HomeScreen> {
                 fontWeight: FontWeight.w600,
                 color: Colors.orange[800],
               ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ===== WI-FI CONNECTED BANNER =====
+
+  Widget _buildWifiConnectedBanner() {
+    final ip = _dataManager.espIp ?? '?';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.green[50],
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.green[300]!, width: 1),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.wifi, color: Colors.green[800], size: 24),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Wi-Fi Connected',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.green[800],
+                  ),
+                ),
+                Text(
+                  'ESP32 at $ip',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.green[700],
+                  ),
+                ),
+              ],
             ),
           ),
         ],

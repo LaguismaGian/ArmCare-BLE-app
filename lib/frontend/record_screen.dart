@@ -28,10 +28,10 @@ class _RecordScreenState extends State<RecordScreen> {
   final List<double> _gyroHistory = [];
   final int _maxPoints = 100;
 
-  // Display scaling — gyro is divided by this so both fit on the same axis.
+  // Gyro display scaling — divide by this to fit with motion on same axis
   static const double _gyroDisplayScale = 100.0;
 
-  // Fixed Y-axis range — prevents auto-scale from lying about the data.
+  // Fixed Y-axis for motion (deviation from 1g)
   static const double _yMax = 8.0;
 
   // Recording log
@@ -69,12 +69,14 @@ class _RecordScreenState extends State<RecordScreen> {
     _loadRecordings();
   }
 
-  /// Fused acceleration magnitude in g: √(ax² + ay² + az²)
+  /// Deviation from gravity in g.
+  /// Still = ~0, small movement = 0.3, hard fall = 1.5+
   double _combinedAccel(double x, double y, double z) {
-    return sqrt(x * x + y * y + z * z);
+    final rawMag = sqrt(x * x + y * y + z * z);
+    return (rawMag - 1.0).abs();
   }
 
-  /// Fused gyroscope magnitude in °/s: √(gx² + gy² + gz²)
+  /// Fused gyro magnitude in °/s
   double _combinedGyro(double x, double y, double z) {
     return sqrt(x * x + y * y + z * z);
   }

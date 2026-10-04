@@ -20,20 +20,27 @@ class ThresholdService {
   final DatabaseService _db = DatabaseService.instance;
 
   /// How many std-devs below the mean fall to set the threshold.
-  /// Higher = more sensitive (more false positives).
-  /// Lower  = stricter (may miss real falls).
   static const double _k = 1.0;
 
   /// Minimum number of Fall recordings required to calculate.
   static const int _minRecordings = 3;
 
-  /// Reads all Fall recordings, computes thresholds, saves them.
+  /// Noise floors — samples below these are ignored during peak detection.
+  static const double _motionNoiseFloor = 0.3; // g (deviation)
+  static const double _gyroNoiseFloor = 10.0; // °/s
+
+  /// Sanity check — if the peak is below this, the recording is junk.
+  static const double _minValidMotionPeak = 0.5; // g
+  static const double _minValidGyroPeak = 20.0; // °/s
+
   Future<ThresholdResult> calculate() async {
     final recordings = await _db.getAllRecordings();
 
-    // Only Fall recordings matter
     final fallRecordings =
         recordings.where((r) => r.label.toLowerCase() == 'fall').toList();
+
+    print('>>> DB has ${recordings.length} recordings, '
+        '${fallRecordings.length} labeled fall');
 
     if (fallRecordings.length < _minRecordings) {
       return ThresholdResult(
@@ -44,41 +51,68 @@ class ThresholdService {
       );
     }
 
-    final peakAccels = <double>[];
+    final peakMotions = <double>[];
     final peakGyros = <double>[];
 
     for (final rec in fallRecordings) {
       if (rec.id == null) continue;
 
       final samples = await _db.getSamplesForRecording(rec.id!);
-      if (samples.isEmpty) continue;
+      if (samples.isEmpty) {
+        print('>>> rec id=${rec.id} has ZERO samples in DB');
+        continue;
+      }
 
-      double maxAccel = 0.0;
+      double maxMotion = 0.0;
       double maxGyro = 0.0;
 
       for (final s in samples) {
-        final accelMag = sqrt(s.ax * s.ax + s.ay * s.ay + s.az * s.az);
+        // recording_service.dart already stores the bias-corrected
+        // deviation in `ax` (phone + BLE both).
+        final motion = s.ax.abs();
+
         final gyroMag = sqrt(s.gx * s.gx + s.gy * s.gy + s.gz * s.gz);
 
-        if (accelMag > maxAccel) maxAccel = accelMag;
-        if (gyroMag > maxGyro) maxGyro = gyroMag;
+        if (motion > _motionNoiseFloor && motion > maxMotion) {
+          maxMotion = motion;
+        }
+        if (gyroMag > _gyroNoiseFloor && gyroMag > maxGyro) {
+          maxGyro = gyroMag;
+        }
       }
 
-      // Only count recordings that actually produced data
-      if (maxAccel > 0) peakAccels.add(maxAccel);
-      if (maxGyro > 0) peakGyros.add(maxGyro);
+      print('>>> rec id=${rec.id} mode=${rec.mode} '
+          'samples=${samples.length} '
+          'maxMotion=${maxMotion.toStringAsFixed(3)} '
+          'maxGyro=${maxGyro.toStringAsFixed(1)}');
+
+      if (maxMotion >= _minValidMotionPeak) {
+        peakMotions.add(maxMotion);
+      } else {
+        print('>>>   motion rejected (need >= $_minValidMotionPeak)');
+      }
+
+      if (maxGyro >= _minValidGyroPeak) {
+        peakGyros.add(maxGyro);
+      } else {
+        print('>>>   gyro rejected (need >= $_minValidGyroPeak)');
+      }
     }
 
-    if (peakAccels.length < _minRecordings) {
+    print('>>> AFTER FILTER: peakMotions=${peakMotions.length} '
+        'peakGyros=${peakGyros.length}');
+
+    if (peakMotions.length < _minRecordings) {
       return ThresholdResult(
         success: false,
-        message: 'Not enough valid samples in recordings. '
-            'Try recording again.',
-        recordingCount: peakAccels.length,
+        message: 'Not enough valid recordings (${peakMotions.length} of '
+            '$_minRecordings). Peak motion too low or samples empty.\n\n'
+            'Try harder drops on a hard surface.',
+        recordingCount: peakMotions.length,
       );
     }
 
-    final accelThreshold = _computeThreshold(peakAccels);
+    final accelThreshold = _computeThreshold(peakMotions);
     final gyroThreshold = _computeThreshold(peakGyros);
 
     final threshold = Threshold(
@@ -91,27 +125,26 @@ class ThresholdService {
 
     return ThresholdResult(
       success: true,
-      message: 'Threshold calculated from ${peakAccels.length} falls.\n'
+      message: 'Threshold calculated from ${peakMotions.length} falls.\n'
           'Accel: ${accelThreshold.toStringAsFixed(2)} g\n'
           'Gyro: ${gyroThreshold.toStringAsFixed(1)} °/s',
-      recordingCount: peakAccels.length,
+      recordingCount: peakMotions.length,
       threshold: threshold,
     );
   }
 
-  /// Convenience: read the currently-saved threshold, or null if none.
   Future<Threshold?> loadSaved() async {
     return _db.getLatestThreshold();
   }
 
-  /// mean − k · stdDev, clamped to be positive.
   double _computeThreshold(List<double> peaks) {
     if (peaks.isEmpty) return 0.0;
 
     final mean = peaks.reduce((a, b) => a + b) / peaks.length;
-    final variance =
-        peaks.map((p) => pow(p - mean, 2)).reduce((a, b) => a + b) /
-            peaks.length;
+    final variance = peaks
+            .map((p) => pow(p - mean, 2))
+            .reduce((a, b) => a + b) /
+        peaks.length;
     final stdDev = sqrt(variance);
 
     final result = mean - _k * stdDev;

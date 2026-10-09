@@ -117,7 +117,6 @@ class Threshold {
   }
 }
 
-/// One alert event (fall or warning).
 class AlertRow {
   final int? id;
   final String alertClass;
@@ -166,7 +165,6 @@ class AlertRow {
   }
 }
 
-/// One emergency contact saved by the user.
 class Contact {
   final int? id;
   final String name;
@@ -195,6 +193,137 @@ class Contact {
   }
 }
 
+/// User profile data.
+class Profile {
+  final int? id;
+  final String name;
+  final String? photoPath;
+  final String gender;
+  final int age;
+  final String address;
+  final int? emergencyContactId; // FK to contacts table
+  final String medicalCondition;
+
+  Profile({
+    this.id,
+    required this.name,
+    this.photoPath,
+    required this.gender,
+    required this.age,
+    required this.address,
+    this.emergencyContactId,
+    required this.medicalCondition,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'name': name,
+      'photoPath': photoPath,
+      'gender': gender,
+      'age': age,
+      'address': address,
+      'emergencyContactId': emergencyContactId,
+      'medicalCondition': medicalCondition,
+    };
+  }
+
+  factory Profile.fromMap(Map<String, dynamic> map) {
+    return Profile(
+      id: map['id'],
+      name: map['name'] ?? '',
+      photoPath: map['photoPath'],
+      gender: map['gender'] ?? '',
+      age: map['age'] ?? 0,
+      address: map['address'] ?? '',
+      emergencyContactId: map['emergencyContactId'],
+      medicalCondition: map['medicalCondition'] ?? '',
+    );
+  }
+}
+
+/// Caregiver details.
+class Caregiver {
+  final int? id;
+  final String name;
+  final String? photoPath;
+  final int age;
+  final String address;
+  final String phone;
+  final String relationship;
+
+  Caregiver({
+    this.id,
+    required this.name,
+    this.photoPath,
+    required this.age,
+    required this.address,
+    required this.phone,
+    required this.relationship,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'name': name,
+      'photoPath': photoPath,
+      'age': age,
+      'address': address,
+      'phone': phone,
+      'relationship': relationship,
+    };
+  }
+
+  factory Caregiver.fromMap(Map<String, dynamic> map) {
+    return Caregiver(
+      id: map['id'],
+      name: map['name'] ?? '',
+      photoPath: map['photoPath'],
+      age: map['age'] ?? 0,
+      address: map['address'] ?? '',
+      phone: map['phone'] ?? '',
+      relationship: map['relationship'] ?? '',
+    );
+  }
+}
+
+/// One HR recording session (60s avg).
+class HrSession {
+  final int? id;
+  final double avgBpm;
+  final int sampleCount;
+  final int durationMs;
+  final String timestamp;
+
+  HrSession({
+    this.id,
+    required this.avgBpm,
+    required this.sampleCount,
+    required this.durationMs,
+    required this.timestamp,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'avgBpm': avgBpm,
+      'sampleCount': sampleCount,
+      'durationMs': durationMs,
+      'timestamp': timestamp,
+    };
+  }
+
+  factory HrSession.fromMap(Map<String, dynamic> map) {
+    return HrSession(
+      id: map['id'],
+      avgBpm: (map['avgBpm'] as num).toDouble(),
+      sampleCount: map['sampleCount'] ?? 0,
+      durationMs: map['durationMs'] ?? 0,
+      timestamp: map['timestamp'] ?? '',
+    );
+  }
+}
+
 class DatabaseService {
   static final DatabaseService instance = DatabaseService._();
   DatabaseService._();
@@ -211,13 +340,16 @@ class DatabaseService {
     final path = join(await getDatabasesPath(), 'armcare.db');
     return await openDatabase(
       path,
-      version: 5,
+      version: 6,
       onCreate: (db, version) async {
         await _createRecordingsTable(db);
         await _createSamplesTable(db);
         await _createThresholdsTable(db);
         await _createAlertsTable(db);
         await _createContactsTable(db);
+        await _createProfileTable(db);
+        await _createCaregiverTable(db);
+        await _createHrSessionsTable(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         await _createRecordingsTable(db);
@@ -225,6 +357,9 @@ class DatabaseService {
         await _createThresholdsTable(db);
         await _createAlertsTable(db);
         await _createContactsTable(db);
+        await _createProfileTable(db);
+        await _createCaregiverTable(db);
+        await _createHrSessionsTable(db);
       },
     );
   }
@@ -287,6 +422,47 @@ class DatabaseService {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT,
         phone TEXT
+      )
+    ''');
+  }
+
+  Future<void> _createProfileTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS profile (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        photoPath TEXT,
+        gender TEXT,
+        age INTEGER,
+        address TEXT,
+        emergencyContactId INTEGER,
+        medicalCondition TEXT
+      )
+    ''');
+  }
+
+  Future<void> _createCaregiverTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS caregiver (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        photoPath TEXT,
+        age INTEGER,
+        address TEXT,
+        phone TEXT,
+        relationship TEXT
+      )
+    ''');
+  }
+
+  Future<void> _createHrSessionsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS hr_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        avgBpm REAL,
+        sampleCount INTEGER,
+        durationMs INTEGER,
+        timestamp TEXT
       )
     ''');
   }
@@ -368,8 +544,6 @@ class DatabaseService {
     return Threshold.fromMap(maps.first);
   }
 
-  /// Wipes calibration data: all fall recordings + samples + threshold.
-  /// Alert history and contacts are preserved.
   Future<void> clearCalibration() async {
     final db = await database;
     await db.delete('samples');
@@ -426,5 +600,73 @@ class DatabaseService {
   Future<void> clearAllContacts() async {
     final db = await database;
     await db.delete('contacts');
+  }
+
+  // ===== PROFILE =====
+  // There is only ever ONE profile row. Save overwrites.
+
+  Future<void> saveProfile(Profile profile) async {
+    final db = await database;
+    await db.delete('profile'); // keep only one
+    await db.insert('profile', profile.toMap());
+  }
+
+  Future<Profile?> getProfile() async {
+    final db = await database;
+    final maps = await db.query('profile', limit: 1);
+    if (maps.isEmpty) return null;
+    return Profile.fromMap(maps.first);
+  }
+
+  Future<void> clearProfile() async {
+    final db = await database;
+    await db.delete('profile');
+  }
+
+  // ===== CAREGIVER =====
+  // There is only ever ONE caregiver row. Save overwrites.
+
+  Future<void> saveCaregiver(Caregiver caregiver) async {
+    final db = await database;
+    await db.delete('caregiver');
+    await db.insert('caregiver', caregiver.toMap());
+  }
+
+  Future<Caregiver?> getCaregiver() async {
+    final db = await database;
+    final maps = await db.query('caregiver', limit: 1);
+    if (maps.isEmpty) return null;
+    return Caregiver.fromMap(maps.first);
+  }
+
+  Future<void> clearCaregiver() async {
+    final db = await database;
+    await db.delete('caregiver');
+  }
+
+  // ===== HR SESSIONS =====
+
+  Future<int> insertHrSession(HrSession session) async {
+    final db = await database;
+    return await db.insert('hr_sessions', session.toMap());
+  }
+
+  Future<List<HrSession>> getAllHrSessions() async {
+    final db = await database;
+    final maps = await db.query('hr_sessions', orderBy: 'id DESC');
+    return maps.map((m) => HrSession.fromMap(m)).toList();
+  }
+
+  Future<HrSession?> getLatestHrSession() async {
+    final db = await database;
+    final maps =
+        await db.query('hr_sessions', orderBy: 'id DESC', limit: 1);
+    if (maps.isEmpty) return null;
+    return HrSession.fromMap(maps.first);
+  }
+
+  Future<void> clearAllHrSessions() async {
+    final db = await database;
+    await db.delete('hr_sessions');
   }
 }
